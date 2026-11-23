@@ -115,12 +115,31 @@ def test_arm_cpu_plugin_has_no_gpus_and_mounts_the_agent_hf_cache(
         ("multi-modal-flashinfer-autotuning", 2, 122880),
         ("dsv41-nvidia-kernels-4xb200", 4, 16384),
         ("glm5next-nvidia-specialized-decode-4xb200", 4, 24576),
+        ("v1-attention-h100-mi300", 1, 32768),
+        ("deepseek-v4-kernel-test-h100", 1, 16384),
+        ("kernels-deepgemm-test-h100", 1, 20480),
+        ("kernels-minimax-m3-sparse-prefill-h100", 1, 8192),
+        ("kernels-bf16x3-router-gemm-h100", 1, 8192),
+        ("kernels-attention-diffkv-test-h100", 1, 8192),
+        ("kernels-flashmla-test-h100", 1, 73728),
+        ("kernels-fusedmoe-layer-test-2-h100s", 2, 20480),
+        ("distributed-compile-unit-tests-2xh100", 2, 12288),
+        ("kernels-minimax-reduce-rms-test-2-gpus", 2, 12288),
+        ("kernels-fp8-moe-test-2xh100", 2, 16384),
+        ("fusion-e2e-tp2-quick-h100", 2, 40960),
+        ("fault-tolerance-e2e-4xh100", 4, 40960),
+        ("dsv41-nvidia-sm80-sm90-decode-8xh100", 8, 12288),
     ],
 )
-def test_listed_b200_step_gets_a_hami_share_on_the_sharing_node(
+def test_listed_step_gets_a_hami_share_on_the_sharing_node(
     fake_global_config, key, gpus, gpumem_mib
 ):
-    step = Step(label=key, key=key, device="b200-k8s", num_devices=gpus)
+    device = (
+        "h100"
+        if "h100" in key or key == "kernels-minimax-reduce-rms-test-2-gpus"
+        else "b200-k8s"
+    )
+    step = Step(label=key, key=key, device=device, num_devices=gpus)
 
     plugin = k8s_plugin.get_k8s_plugin(step, "example/image:latest")
 
@@ -144,6 +163,7 @@ def test_listed_b200_step_gets_a_hami_share_on_the_sharing_node(
 
 def test_every_listed_step_has_a_test_row():
     assert len(k8s_plugin.HAMI_GPUMEM_MIB) == 30
+    assert len(k8s_plugin.HAMI_GPUMEM_MIB_H100) == 14
 
 
 def test_unlisted_b200_step_keeps_a_whole_card_anywhere(fake_global_config):
@@ -165,12 +185,12 @@ def test_unlisted_b200_step_keeps_a_whole_card_anywhere(fake_global_config):
     assert pod_spec["containers"][0]["resources"]["limits"] == {"nvidia.com/gpu": 1}
 
 
-def test_hami_list_applies_to_b200_only(fake_global_config):
-    step = Step(label="Same key", key="v1-attention-b200", device="h100")
+def test_hami_list_applies_to_b200_and_h100_only(fake_global_config):
+    step = Step(label="Same key", key="v1-attention-b200", device="l4")
 
     plugin = k8s_plugin.get_k8s_plugin(step, "example/image:latest")
 
-    assert "metadata" not in plugin["kubernetes"]
+    assert "labels" not in plugin["kubernetes"].get("metadata", {})
     limits = plugin["kubernetes"]["podSpec"]["containers"][0]["resources"]["limits"]
     assert "nvidia.com/gpumem" not in limits
 
@@ -212,3 +232,28 @@ def test_listed_step_without_a_gpu_count_is_a_one_gpu_share(fake_global_config):
 
     limits = plugin["kubernetes"]["podSpec"]["containers"][0]["resources"]["limits"]
     assert limits == {"nvidia.com/gpu": 1, "nvidia.com/gpumem": 32768}
+
+
+def test_b200_quota_never_applies_to_the_same_key_on_h100(fake_global_config):
+    # A step that moves to H100 keeps its key; its B200 quota would not fit an
+    # 80 GB card, so it keeps whole cards until it is staged on H100.
+    step = Step(
+        label="Moved",
+        key="multi-modal-flashinfer-autotuning",
+        device="h100",
+        num_devices=2,
+    )
+
+    plugin = k8s_plugin.get_k8s_plugin(step, "example/image:latest")
+
+    assert "metadata" not in plugin["kubernetes"]
+    limits = plugin["kubernetes"]["podSpec"]["containers"][0]["resources"]["limits"]
+    assert limits == {"nvidia.com/gpu": 2}
+
+
+def test_h100_quota_never_applies_to_the_same_key_on_b200(fake_global_config):
+    step = Step(label="Moved", key="v1-attention-h100-mi300", device="b200-k8s")
+
+    plugin = k8s_plugin.get_k8s_plugin(step, "example/image:latest")
+
+    assert "metadata" not in plugin["kubernetes"]

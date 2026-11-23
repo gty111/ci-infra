@@ -343,6 +343,25 @@ HAMI_GPUMEM_MIB = {
     "glm5next-nvidia-specialized-decode-4xb200": 24576,
 }
 
+# The same for H100 (80 GB cards). A quota is measured on one device type, so
+# each device has its own table: a step that moves keeps whole cards.
+HAMI_GPUMEM_MIB_H100 = {
+    "v1-attention-h100-mi300": 32768,
+    "deepseek-v4-kernel-test-h100": 16384,
+    "kernels-deepgemm-test-h100": 20480,
+    "kernels-minimax-m3-sparse-prefill-h100": 8192,
+    "kernels-bf16x3-router-gemm-h100": 8192,
+    "kernels-attention-diffkv-test-h100": 8192,
+    "kernels-flashmla-test-h100": 73728,
+    "kernels-fusedmoe-layer-test-2-h100s": 20480,
+    "distributed-compile-unit-tests-2xh100": 12288,
+    "kernels-minimax-reduce-rms-test-2-gpus": 12288,
+    "kernels-fp8-moe-test-2xh100": 16384,
+    "fusion-e2e-tp2-quick-h100": 40960,
+    "fault-tolerance-e2e-4xh100": 40960,
+    "dsv41-nvidia-sm80-sm90-decode-8xh100": 12288,
+}
+
 # Steps whose quota was staged on more than one GPU, with that GPU count. Every
 # other listed step was staged on one. A step whose GPU count changes keeps
 # whole cards until it is staged again.
@@ -355,6 +374,13 @@ HAMI_GPUS = {
     "multi-modal-flashinfer-autotuning": 2,
     "dsv41-nvidia-kernels-4xb200": 4,
     "glm5next-nvidia-specialized-decode-4xb200": 4,
+    "kernels-fusedmoe-layer-test-2-h100s": 2,
+    "distributed-compile-unit-tests-2xh100": 2,
+    "kernels-minimax-reduce-rms-test-2-gpus": 2,
+    "kernels-fp8-moe-test-2xh100": 2,
+    "fusion-e2e-tp2-quick-h100": 2,
+    "fault-tolerance-e2e-4xh100": 4,
+    "dsv41-nvidia-sm80-sm90-decode-8xh100": 8,
 }
 
 
@@ -381,11 +407,11 @@ def get_k8s_plugin(step: Step, image: str):
         "nvidia.com/gpu"
     ] = step.num_devices or 1
 
-    if (
-        step.device == DeviceType.B200_K8S
-        and step.key in HAMI_GPUMEM_MIB
-        and (step.num_devices or 1) == HAMI_GPUS.get(step.key, 1)
-    ):
+    quotas = {
+        DeviceType.B200_K8S: HAMI_GPUMEM_MIB,
+        DeviceType.H100: HAMI_GPUMEM_MIB_H100,
+    }.get(step.device, {})
+    if step.key in quotas and (step.num_devices or 1) == HAMI_GPUS.get(step.key, 1):
         # HAMi's webhook only handles Pods carrying this label.
         plugin["kubernetes"]["metadata"] = {"labels": {"vllm.ci/gpu-sharing": "hami"}}
         pod_spec = plugin["kubernetes"]["podSpec"]
@@ -399,9 +425,9 @@ def get_k8s_plugin(step: Step, image: str):
                 "effect": "NoSchedule",
             }
         ]
-        pod_spec["containers"][0]["resources"]["limits"]["nvidia.com/gpumem"] = (
-            HAMI_GPUMEM_MIB[step.key]
-        )
+        pod_spec["containers"][0]["resources"]["limits"]["nvidia.com/gpumem"] = quotas[
+            step.key
+        ]
 
     if step.device == DeviceType.L4:
         num_gpus = step.num_devices or 1
